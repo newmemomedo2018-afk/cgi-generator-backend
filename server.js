@@ -11,23 +11,45 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-// MongoDB Connection
-const MONGODB_URI = process.env.MONGODB_URI || 'mongodb+srv://memomedo2018:Mohamed0%40%21@cgi-generator.nlqnv40.mongodb.net/cgi-generator?retryWrites=true&w=majority&appName=cgi-generator';
+// MongoDB Connection with Serverless Support
+const MONGODB_URI = process.env.MONGODB_URI || 'mongodb+srv://cgiuser:Cg1Gen3r%40t0r2024%21@cgi-generator.nlqnv40.mongodb.net/cgi-generator?retryWrites=true&w=majority';
 
-mongoose.connect(MONGODB_URI, {
-  useNewUrlParser: true,
-  useUnifiedTopology: true,
-})
-.then(() => console.log('✅ Connected to MongoDB Atlas'))
-.catch(err => console.error('❌ MongoDB connection error:', err));
+let isConnected = false;
 
-mongoose.connection.on('connected', () => {
-  console.log('✅ Mongoose connected to MongoDB Atlas');
-});
+const connectDB = async () => {
+  if (isConnected) {
+    console.log('MongoDB already connected');
+    return;
+  }
 
-mongoose.connection.on('error', (err) => {
-  console.error('❌ Mongoose connection error:', err);
-});
+  try {
+    console.log('Attempting to connect to MongoDB...');
+    const connection = await mongoose.connect(MONGODB_URI, {
+      useNewUrlParser: true,
+      useUnifiedTopology: true,
+      serverSelectionTimeoutMS: 10000, // 10 second timeout
+      socketTimeoutMS: 45000, // 45 second socket timeout
+      maxPoolSize: 10,
+      bufferCommands: false,
+      bufferMaxEntries: 0,
+    });
+    
+    isConnected = true;
+    console.log('✅ Connected to MongoDB Atlas successfully');
+    
+    mongoose.connection.on('disconnected', () => {
+      console.log('⚠️ MongoDB disconnected');
+      isConnected = false;
+    });
+    
+    return connection;
+  } catch (error) {
+    console.error('❌ MongoDB connection failed:', error.message);
+    console.error('Connection string format:', MONGODB_URI.replace(/:[^:@]*@/, ':***@'));
+    isConnected = false;
+    throw error;
+  }
+};
 
 // User Schema
 const userSchema = new mongoose.Schema({
@@ -81,17 +103,20 @@ const upload = multer({
 // Auth middleware
 const authenticateUser = async (req, res, next) => {
   try {
+    await connectDB(); // Ensure DB connection
+    
     const token = req.header('Authorization')?.replace('Bearer ', '');
-    if (!token) throw new Error();
+    if (!token) throw new Error('No token provided');
     
     const decoded = jwt.verify(token, JWT_SECRET);
     const user = await User.findById(decoded.id);
     
-    if (!user) throw new Error();
+    if (!user) throw new Error('User not found');
     
     req.user = user;
     next();
   } catch (error) {
+    console.error('Authentication error:', error.message);
     res.status(401).json({ error: 'يرجى تسجيل الدخول' });
   }
 };
@@ -105,19 +130,35 @@ async function uploadToCloudStorage(fileBuffer, fileName) {
 // Routes
 
 // Health check
-app.get('/api/health', (req, res) => {
+app.get('/api/health', async (req, res) => {
+  let dbStatus = 'Disconnected';
+  let dbError = null;
+  
+  try {
+    await connectDB();
+    dbStatus = mongoose.connection.readyState === 1 ? 'Connected' : 'Disconnected';
+    console.log('Health check - DB status:', dbStatus);
+  } catch (error) {
+    dbError = error.message;
+    console.error('Health check - DB error:', error.message);
+  }
+  
   res.json({ 
     status: 'OK', 
     message: 'CGI Generator API with MongoDB is running!',
     timestamp: new Date().toISOString(),
-    version: '2.0.0',
-    database: mongoose.connection.readyState === 1 ? 'Connected' : 'Disconnected'
+    version: '2.1.0',
+    database: dbStatus,
+    ...(dbError && { dbError }),
+    environment: process.env.NODE_ENV || 'development'
   });
 });
 
 // Register
 app.post('/api/register', async (req, res) => {
   try {
+    await connectDB();
+    
     const { name, email, password } = req.body;
     
     if (!name || !email || !password) {
@@ -161,13 +202,15 @@ app.post('/api/register', async (req, res) => {
     
   } catch (error) {
     console.error('Register error:', error);
-    res.status(500).json({ error: 'خطأ في إنشاء الحساب' });
+    res.status(500).json({ error: 'خطأ في إنشاء الحساب: ' + error.message });
   }
 });
 
 // Login
 app.post('/api/login', async (req, res) => {
   try {
+    await connectDB();
+    
     const { email, password } = req.body;
     
     const user = await User.findOne({ email });
@@ -200,7 +243,7 @@ app.post('/api/login', async (req, res) => {
     
   } catch (error) {
     console.error('Login error:', error);
-    res.status(500).json({ error: 'خطأ في تسجيل الدخول' });
+    res.status(500).json({ error: 'خطأ في تسجيل الدخول: ' + error.message });
   }
 });
 
@@ -221,7 +264,7 @@ app.get('/api/profile', authenticateUser, async (req, res) => {
     });
   } catch (error) {
     console.error('Profile error:', error);
-    res.status(500).json({ error: 'خطأ في جلب الملف الشخصي' });
+    res.status(500).json({ error: 'خطأ في جلب الملف الشخصي: ' + error.message });
   }
 });
 
@@ -234,7 +277,7 @@ app.get('/api/projects', authenticateUser, async (req, res) => {
     res.json({ projects });
   } catch (error) {
     console.error('Projects error:', error);
-    res.status(500).json({ error: 'خطأ في جلب المشاريع' });
+    res.status(500).json({ error: 'خطأ في جلب المشاريع: ' + error.message });
   }
 });
 
@@ -296,6 +339,7 @@ app.post('/api/create-project', authenticateUser, upload.fields([
     // Simulate AI processing
     setTimeout(async () => {
       try {
+        await connectDB();
         await Project.findByIdAndUpdate(project._id, {
           status: 'completed',
           processingCompleted: new Date(),
@@ -322,7 +366,7 @@ app.post('/api/create-project', authenticateUser, upload.fields([
     
   } catch (error) {
     console.error('Create project error:', error);
-    res.status(500).json({ error: 'خطأ في إنشاء المشروع' });
+    res.status(500).json({ error: 'خطأ في إنشاء المشروع: ' + error.message });
   }
 });
 
@@ -341,7 +385,7 @@ app.get('/api/projects/:id', authenticateUser, async (req, res) => {
     res.json({ project });
   } catch (error) {
     console.error('Get project error:', error);
-    res.status(500).json({ error: 'خطأ في جلب المشروع' });
+    res.status(500).json({ error: 'خطأ في جلب المشروع: ' + error.message });
   }
 });
 
@@ -374,7 +418,7 @@ app.post('/api/add-credits', authenticateUser, async (req, res) => {
     
   } catch (error) {
     console.error('Add credits error:', error);
-    res.status(500).json({ error: 'خطأ في إضافة الكريدت' });
+    res.status(500).json({ error: 'خطأ في إضافة الكريدت: ' + error.message });
   }
 });
 
@@ -402,7 +446,7 @@ app.get('/api/stats', authenticateUser, async (req, res) => {
     });
   } catch (error) {
     console.error('Stats error:', error);
-    res.status(500).json({ error: 'خطأ في جلب الإحصائيات' });
+    res.status(500).json({ error: 'خطأ في جلب الإحصائيات: ' + error.message });
   }
 });
 
@@ -420,12 +464,15 @@ app.use((error, req, res, next) => {
   }
   
   console.error('Server error:', error);
-  res.status(500).json({ error: 'خطأ في الخادم' });
+  res.status(500).json({ error: 'خطأ في الخادم: ' + error.message });
 });
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
-  console.log(`🚀 Server running on port ${PORT}`);
-});
+
+if (process.env.NODE_ENV !== 'production') {
+  app.listen(PORT, () => {
+    console.log(`🚀 Server running on port ${PORT}`);
+  });
+}
 
 module.exports = app;
