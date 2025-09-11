@@ -1,5 +1,7 @@
 const express = require('express');
 const cors = require('cors');
+const bcrypt = require('bcryptjs');
+const jwt = require('jsonwebtoken');
 
 const app = express();
 
@@ -7,7 +9,14 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-// Health check endpoint
+// In-memory storage (temporary)
+let users = [];
+let currentId = 1;
+
+// JWT Secret
+const JWT_SECRET = 'temp-secret-key-change-in-production';
+
+// Health check
 app.get('/api/health', (req, res) => {
   res.json({ 
     status: 'OK', 
@@ -17,18 +26,77 @@ app.get('/api/health', (req, res) => {
   });
 });
 
-// Test endpoint
-app.get('/api/test', (req, res) => {
-  res.json({ 
-    message: 'Welcome to CGI Generator API!',
-    features: [
-      'AI-powered CGI image generation',
-      'Video creation from images', 
-      'Credit-based pricing',
-      'Professional dashboard'
-    ]
-  });
+// Register endpoint
+app.post('/api/register', async (req, res) => {
+  try {
+    const { name, email, password } = req.body;
+    
+    // Check if user exists
+    const existingUser = users.find(u => u.email === email);
+    if (existingUser) {
+      return res.status(400).json({ error: 'المستخدم موجود بالفعل' });
+    }
+    
+    // Hash password
+    const hashedPassword = await bcrypt.hash(password, 10);
+    
+    // Create user
+    const user = {
+      id: currentId++,
+      name,
+      email,
+      password: hashedPassword,
+      credits: 5, // 5 free credits
+      createdAt: new Date()
+    };
+    
+    users.push(user);
+    
+    // Generate token
+    const token = jwt.sign({ id: user.id }, JWT_SECRET);
+    
+    res.json({
+      success: true,
+      message: 'تم إنشاء الحساب بنجاح',
+      token,
+      user: { id: user.id, name: user.name, email: user.email, credits: user.credits }
+    });
+    
+  } catch (error) {
+    res.status(500).json({ error: 'خطأ في إنشاء الحساب' });
+  }
 });
 
-// For Vercel serverless functions
+// Login endpoint
+app.post('/api/login', async (req, res) => {
+  try {
+    const { email, password } = req.body;
+    
+    // Find user
+    const user = users.find(u => u.email === email);
+    if (!user) {
+      return res.status(400).json({ error: 'المستخدم غير موجود' });
+    }
+    
+    // Check password
+    const validPassword = await bcrypt.compare(password, user.password);
+    if (!validPassword) {
+      return res.status(400).json({ error: 'كلمة المرور غير صحيحة' });
+    }
+    
+    // Generate token
+    const token = jwt.sign({ id: user.id }, JWT_SECRET);
+    
+    res.json({
+      success: true,
+      message: 'تم تسجيل الدخول بنجاح',
+      token,
+      user: { id: user.id, name: user.name, email: user.email, credits: user.credits }
+    });
+    
+  } catch (error) {
+    res.status(500).json({ error: 'خطأ في تسجيل الدخول' });
+  }
+});
+
 module.exports = app;
