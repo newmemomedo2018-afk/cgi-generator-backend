@@ -31,7 +31,6 @@ const connectDB = async () => {
       socketTimeoutMS: 45000, // 45 second socket timeout
       maxPoolSize: 10,
       bufferCommands: false,
-      bufferMaxEntries: 0,
     });
     
     isConnected = true;
