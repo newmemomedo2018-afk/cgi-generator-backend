@@ -2,7 +2,6 @@ const express = require('express');
 const cors = require('cors');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
-const mongoose = require('mongoose');
 const multer = require('multer');
 
 const app = express();
@@ -11,58 +10,13 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-// MongoDB Connection
-const MONGODB_URI = process.env.MONGODB_URI || 'mongodb+srv://memomedo2018:Mohamed0%40%21@cgi-generator.nlqnv40.mongodb.net/cgi-generator?retryWrites=true&w=majority&appName=cgi-generator';
+// In-memory storage (temporary)
+let users = [];
+let projects = [];
+let currentUserId = 1;
+let currentProjectId = 1;
 
-mongoose.connect(MONGODB_URI, {
-  useNewUrlParser: true,
-  useUnifiedTopology: true,
-})
-.then(() => console.log('✅ Connected to MongoDB Atlas'))
-.catch(err => console.error('❌ MongoDB connection error:', err));
-
-mongoose.connection.on('connected', () => {
-  console.log('✅ Mongoose connected to MongoDB Atlas');
-});
-
-mongoose.connection.on('error', (err) => {
-  console.error('❌ Mongoose connection error:', err);
-});
-
-// User Schema
-const userSchema = new mongoose.Schema({
-  name: { type: String, required: true },
-  email: { type: String, required: true, unique: true },
-  password: { type: String, required: true },
-  credits: { type: Number, default: 5 },
-  plan: { type: String, default: 'free' },
-  createdAt: { type: Date, default: Date.now },
-  lastLogin: { type: Date, default: Date.now }
-});
-
-// Project Schema
-const projectSchema = new mongoose.Schema({
-  userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
-  title: { type: String, required: true },
-  description: { type: String },
-  contentType: { type: String, enum: ['image', 'video'], default: 'image' },
-  status: { type: String, enum: ['pending', 'processing', 'completed', 'failed'], default: 'pending' },
-  productImageUrl: { type: String },
-  sceneImageUrl: { type: String },
-  resultImageUrl: { type: String },
-  resultVideoUrl: { type: String },
-  creditsUsed: { type: Number, default: 1 },
-  processingStarted: { type: Date },
-  processingCompleted: { type: Date },
-  aiJobId: { type: String },
-  createdAt: { type: Date, default: Date.now }
-});
-
-// Models
-const User = mongoose.model('User', userSchema);
-const Project = mongoose.model('Project', projectSchema);
-
-const JWT_SECRET = process.env.JWT_SECRET || 'temp-secret-key-2024-mongodb';
+const JWT_SECRET = process.env.JWT_SECRET || 'temp-secret-key-2024';
 
 // File upload configuration
 const storage = multer.memoryStorage();
@@ -79,13 +33,13 @@ const upload = multer({
 });
 
 // Auth middleware
-const authenticateUser = async (req, res, next) => {
+const authenticateUser = (req, res, next) => {
   try {
     const token = req.header('Authorization')?.replace('Bearer ', '');
     if (!token) throw new Error();
     
     const decoded = jwt.verify(token, JWT_SECRET);
-    const user = await User.findById(decoded.id);
+    const user = users.find(u => u.id === decoded.id);
     
     if (!user) throw new Error();
     
@@ -98,7 +52,6 @@ const authenticateUser = async (req, res, next) => {
 
 // Helper function for cloud storage (placeholder)
 async function uploadToCloudStorage(fileBuffer, fileName) {
-  // Placeholder - سنضيف Cloudinary لاحقاً
   return `https://via.placeholder.com/400x300.png?text=${encodeURIComponent(fileName)}`;
 }
 
@@ -108,10 +61,12 @@ async function uploadToCloudStorage(fileBuffer, fileName) {
 app.get('/api/health', (req, res) => {
   res.json({ 
     status: 'OK', 
-    message: 'CGI Generator API with MongoDB is running!',
+    message: 'CGI Generator API is running! (In-Memory Mode)',
     timestamp: new Date().toISOString(),
-    version: '2.0.0',
-    database: mongoose.connection.readyState === 1 ? 'Connected' : 'Disconnected'
+    version: '2.1.0-temp',
+    database: 'In-Memory',
+    users: users.length,
+    projects: projects.length
   });
 });
 
@@ -128,30 +83,33 @@ app.post('/api/register', async (req, res) => {
       return res.status(400).json({ error: 'كلمة المرور يجب أن تكون 6 أحرف على الأقل' });
     }
     
-    const existingUser = await User.findOne({ email });
-    if (existingUser) {
+    if (users.find(u => u.email === email)) {
       return res.status(400).json({ error: 'المستخدم موجود بالفعل' });
     }
     
     const hashedPassword = await bcrypt.hash(password, 10);
     
-    const user = new User({
+    const user = {
+      id: currentUserId++,
       name,
       email,
       password: hashedPassword,
-      credits: 5
-    });
+      credits: 5,
+      plan: 'free',
+      createdAt: new Date(),
+      lastLogin: new Date()
+    };
     
-    await user.save();
+    users.push(user);
     
-    const token = jwt.sign({ id: user._id }, JWT_SECRET);
+    const token = jwt.sign({ id: user.id }, JWT_SECRET);
     
     res.json({
       success: true,
       message: 'تم إنشاء الحساب بنجاح',
       token,
       user: { 
-        id: user._id, 
+        id: user.id, 
         name: user.name, 
         email: user.email, 
         credits: user.credits,
@@ -170,7 +128,7 @@ app.post('/api/login', async (req, res) => {
   try {
     const { email, password } = req.body;
     
-    const user = await User.findOne({ email });
+    const user = users.find(u => u.email === email);
     if (!user) {
       return res.status(400).json({ error: 'المستخدم غير موجود' });
     }
@@ -181,16 +139,15 @@ app.post('/api/login', async (req, res) => {
     }
     
     user.lastLogin = new Date();
-    await user.save();
     
-    const token = jwt.sign({ id: user._id }, JWT_SECRET);
+    const token = jwt.sign({ id: user.id }, JWT_SECRET);
     
     res.json({
       success: true,
       message: 'تم تسجيل الدخول بنجاح',
       token,
       user: { 
-        id: user._id, 
+        id: user.id, 
         name: user.name, 
         email: user.email, 
         credits: user.credits,
@@ -205,37 +162,26 @@ app.post('/api/login', async (req, res) => {
 });
 
 // Get user profile
-app.get('/api/profile', authenticateUser, async (req, res) => {
-  try {
-    const user = await User.findById(req.user._id);
-    res.json({
-      user: {
-        id: user._id,
-        name: user.name,
-        email: user.email,
-        credits: user.credits,
-        plan: user.plan,
-        createdAt: user.createdAt,
-        lastLogin: user.lastLogin
-      }
-    });
-  } catch (error) {
-    console.error('Profile error:', error);
-    res.status(500).json({ error: 'خطأ في جلب الملف الشخصي' });
-  }
+app.get('/api/profile', authenticateUser, (req, res) => {
+  res.json({
+    user: {
+      id: req.user.id,
+      name: req.user.name,
+      email: req.user.email,
+      credits: req.user.credits,
+      plan: req.user.plan,
+      createdAt: req.user.createdAt,
+      lastLogin: req.user.lastLogin
+    }
+  });
 });
 
 // Get user projects
-app.get('/api/projects', authenticateUser, async (req, res) => {
-  try {
-    const projects = await Project.find({ userId: req.user._id })
-      .sort({ createdAt: -1 });
-    
-    res.json({ projects });
-  } catch (error) {
-    console.error('Projects error:', error);
-    res.status(500).json({ error: 'خطأ في جلب المشاريع' });
-  }
+app.get('/api/projects', authenticateUser, (req, res) => {
+  const userProjects = projects.filter(project => project.userId === req.user.id)
+    .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+  
+  res.json({ projects: userProjects });
 });
 
 // Create project with file upload
@@ -274,8 +220,9 @@ app.post('/api/create-project', authenticateUser, upload.fields([
     );
     
     // Create project
-    const project = new Project({
-      userId: req.user._id,
+    const project = {
+      id: currentProjectId++,
+      userId: req.user.id,
       title: title || 'مشروع CGI جديد',
       description: description || 'مشروع توليد صور وفيديوهات CGI',
       contentType,
@@ -283,27 +230,25 @@ app.post('/api/create-project', authenticateUser, upload.fields([
       sceneImageUrl,
       creditsUsed: requiredCredits,
       status: 'processing',
-      processingStarted: new Date()
-    });
+      processingStarted: new Date(),
+      createdAt: new Date()
+    };
     
-    await project.save();
+    projects.push(project);
     
     // Deduct credits
-    await User.findByIdAndUpdate(req.user._id, {
-      $inc: { credits: -requiredCredits }
-    });
+    req.user.credits -= requiredCredits;
     
     // Simulate AI processing
-    setTimeout(async () => {
-      try {
-        await Project.findByIdAndUpdate(project._id, {
-          status: 'completed',
-          processingCompleted: new Date(),
-          resultImageUrl: 'https://via.placeholder.com/800x600.png?text=CGI+Result+Image',
-          resultVideoUrl: contentType === 'video' ? 'https://sample-videos.com/zip/10/mp4/360/mp4-5s.mp4' : null
-        });
-      } catch (error) {
-        console.error('Error updating project status:', error);
+    setTimeout(() => {
+      const projectIndex = projects.findIndex(p => p.id === project.id);
+      if (projectIndex !== -1) {
+        projects[projectIndex].status = 'completed';
+        projects[projectIndex].processingCompleted = new Date();
+        projects[projectIndex].resultImageUrl = 'https://via.placeholder.com/800x600.png?text=CGI+Result+Image';
+        if (contentType === 'video') {
+          projects[projectIndex].resultVideoUrl = 'https://sample-videos.com/zip/10/mp4/360/mp4-5s.mp4';
+        }
       }
     }, 10000); // 10 seconds simulation
     
@@ -311,7 +256,7 @@ app.post('/api/create-project', authenticateUser, upload.fields([
       success: true,
       message: 'تم إنشاء المشروع بنجاح وبدء المعالجة',
       project: {
-        id: project._id,
+        id: project.id,
         title: project.title,
         status: project.status,
         contentType: project.contentType,
@@ -327,83 +272,57 @@ app.post('/api/create-project', authenticateUser, upload.fields([
 });
 
 // Get project by ID
-app.get('/api/projects/:id', authenticateUser, async (req, res) => {
-  try {
-    const project = await Project.findOne({ 
-      _id: req.params.id, 
-      userId: req.user._id 
-    });
-    
-    if (!project) {
-      return res.status(404).json({ error: 'المشروع غير موجود' });
-    }
-    
-    res.json({ project });
-  } catch (error) {
-    console.error('Get project error:', error);
-    res.status(500).json({ error: 'خطأ في جلب المشروع' });
+app.get('/api/projects/:id', authenticateUser, (req, res) => {
+  const project = projects.find(p => 
+    p.id === parseInt(req.params.id) && p.userId === req.user.id
+  );
+  
+  if (!project) {
+    return res.status(404).json({ error: 'المشروع غير موجود' });
   }
+  
+  res.json({ project });
 });
 
-// Add credits (for admin or payment processing)
-app.post('/api/add-credits', authenticateUser, async (req, res) => {
-  try {
-    const { credits, reason = 'Purchase' } = req.body;
-    
-    if (!credits || credits <= 0) {
-      return res.status(400).json({ error: 'عدد الكريدت يجب أن يكون أكبر من صفر' });
-    }
-    
-    const user = await User.findByIdAndUpdate(
-      req.user._id,
-      { $inc: { credits: credits } },
-      { new: true }
-    );
-    
-    res.json({
-      success: true,
-      message: `تم إضافة ${credits} كريدت بنجاح`,
-      user: {
-        id: user._id,
-        name: user.name,
-        email: user.email,
-        credits: user.credits,
-        plan: user.plan
-      }
-    });
-    
-  } catch (error) {
-    console.error('Add credits error:', error);
-    res.status(500).json({ error: 'خطأ في إضافة الكريدت' });
+// Add credits
+app.post('/api/add-credits', authenticateUser, (req, res) => {
+  const { credits, reason = 'Purchase' } = req.body;
+  
+  if (!credits || credits <= 0) {
+    return res.status(400).json({ error: 'عدد الكريدت يجب أن يكون أكبر من صفر' });
   }
+  
+  req.user.credits += credits;
+  
+  res.json({
+    success: true,
+    message: `تم إضافة ${credits} كريدت بنجاح`,
+    user: {
+      id: req.user.id,
+      name: req.user.name,
+      email: req.user.email,
+      credits: req.user.credits,
+      plan: req.user.plan
+    }
+  });
 });
 
 // Get dashboard stats
-app.get('/api/stats', authenticateUser, async (req, res) => {
-  try {
-    const totalProjects = await Project.countDocuments({ userId: req.user._id });
-    const completedProjects = await Project.countDocuments({ 
-      userId: req.user._id, 
-      status: 'completed' 
-    });
-    const processingProjects = await Project.countDocuments({ 
-      userId: req.user._id, 
-      status: 'processing' 
-    });
-    
-    res.json({
-      stats: {
-        totalProjects,
-        completedProjects,
-        processingProjects,
-        credits: req.user.credits,
-        plan: req.user.plan
-      }
-    });
-  } catch (error) {
-    console.error('Stats error:', error);
-    res.status(500).json({ error: 'خطأ في جلب الإحصائيات' });
-  }
+app.get('/api/stats', authenticateUser, (req, res) => {
+  const userProjects = projects.filter(p => p.userId === req.user.id);
+  const totalProjects = userProjects.length;
+  const completedProjects = userProjects.filter(p => p.status === 'completed').length;
+  const processingProjects = userProjects.filter(p => p.status === 'processing').length;
+  
+  res.json({
+    stats: {
+      totalProjects,
+      completedProjects,
+      processingProjects,
+      credits: req.user.credits,
+      plan: req.user.plan
+    }
+  });
 });
 
 // 404 handler
