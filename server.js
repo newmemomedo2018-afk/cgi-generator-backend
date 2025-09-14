@@ -2,162 +2,174 @@ const express = require('express');
 const cors = require('cors');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
-const mongoose = require('mongoose');
 const multer = require('multer');
+const axios = require('axios');
 
 const app = express();
 
 // Middleware
 app.use(cors());
-app.use(express.json());
+app.use(express.json({ limit: '50mb' }));
+app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 
-// MongoDB Connection with Serverless Support
-const MONGODB_URI = process.env.MONGODB_URI || 'mongodb+srv://cgiuser:Cg1Gen3r%40t0r2024%21@cgi-generator.nlqnv40.mongodb.net/cgi-generator?retryWrites=true&w=majority';
-
-let isConnected = false;
-
-const connectDB = async () => {
-  if (isConnected) {
-    console.log('MongoDB already connected');
-    return;
-  }
-
-  try {
-    console.log('Attempting to connect to MongoDB...');
-    const connection = await mongoose.connect(MONGODB_URI, {
-      useNewUrlParser: true,
-      useUnifiedTopology: true,
-      serverSelectionTimeoutMS: 10000, // 10 second timeout
-      socketTimeoutMS: 45000, // 45 second socket timeout
-      maxPoolSize: 10,
-      bufferCommands: false,
-    });
-    
-    isConnected = true;
-    console.log('✅ Connected to MongoDB Atlas successfully');
-    
-    mongoose.connection.on('disconnected', () => {
-      console.log('⚠️ MongoDB disconnected');
-      isConnected = false;
-    });
-    
-    return connection;
-  } catch (error) {
-    console.error('❌ MongoDB connection failed:', error.message);
-    console.error('Connection string format:', MONGODB_URI.replace(/:[^:@]*@/, ':***@'));
-    isConnected = false;
-    throw error;
-  }
-};
-
-// User Schema
-const userSchema = new mongoose.Schema({
-  name: { type: String, required: true },
-  email: { type: String, required: true, unique: true },
-  password: { type: String, required: true },
-  credits: { type: Number, default: 5 },
-  plan: { type: String, default: 'free' },
-  createdAt: { type: Date, default: Date.now },
-  lastLogin: { type: Date, default: Date.now }
-});
-
-// Project Schema
-const projectSchema = new mongoose.Schema({
-  userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
-  title: { type: String, required: true },
-  description: { type: String },
-  contentType: { type: String, enum: ['image', 'video'], default: 'image' },
-  status: { type: String, enum: ['pending', 'processing', 'completed', 'failed'], default: 'pending' },
-  productImageUrl: { type: String },
-  sceneImageUrl: { type: String },
-  resultImageUrl: { type: String },
-  resultVideoUrl: { type: String },
-  creditsUsed: { type: Number, default: 1 },
-  processingStarted: { type: Date },
-  processingCompleted: { type: Date },
-  aiJobId: { type: String },
-  createdAt: { type: Date, default: Date.now }
-});
-
-// Models
-const User = mongoose.model('User', userSchema);
-const Project = mongoose.model('Project', projectSchema);
-
-const JWT_SECRET = process.env.JWT_SECRET || 'temp-secret-key-2024-mongodb';
-
-// File upload configuration
+// Multer config for file uploads
 const storage = multer.memoryStorage();
 const upload = multer({ 
-  storage,
+  storage: storage,
   limits: { fileSize: 10 * 1024 * 1024 }, // 10MB limit
   fileFilter: (req, file, cb) => {
     if (file.mimetype.startsWith('image/')) {
       cb(null, true);
     } else {
-      cb(new Error('Only image files allowed'), false);
+      cb(new Error('Only image files are allowed!'), false);
     }
   }
 });
 
+// In-memory storage (في الإنتاج، استخدم MongoDB)
+let users = [];
+let jobs = [];
+let currentUserId = 1;
+let currentJobId = 1;
+
+const JWT_SECRET = 'temp-secret-key-2024';
+
+// API Keys - ضع مفاتيح APIs الحقيقية في متغيرات البيئة
+const GEMINI_API_KEY = process.env.GEMINI_API_KEY || 'your-gemini-api-key';
+const FAL_API_KEY = process.env.FAL_API_KEY || 'your-fal-api-key';
+const CLOUDINARY_URL = process.env.CLOUDINARY_URL || 'your-cloudinary-url';
+
 // Auth middleware
-const authenticateUser = async (req, res, next) => {
+const authenticateUser = (req, res, next) => {
   try {
-    await connectDB(); // Ensure DB connection
-    
     const token = req.header('Authorization')?.replace('Bearer ', '');
-    if (!token) throw new Error('No token provided');
+    if (!token) throw new Error();
     
     const decoded = jwt.verify(token, JWT_SECRET);
-    const user = await User.findById(decoded.id);
+    const user = users.find(u => u.id === decoded.id);
     
-    if (!user) throw new Error('User not found');
+    if (!user) throw new Error();
     
     req.user = user;
     next();
   } catch (error) {
-    console.error('Authentication error:', error.message);
     res.status(401).json({ error: 'يرجى تسجيل الدخول' });
   }
 };
 
-// Helper function for cloud storage (placeholder)
-async function uploadToCloudStorage(fileBuffer, fileName) {
-  // Placeholder - سنضيف Cloudinary لاحقاً
-  return `https://via.placeholder.com/400x300.png?text=${encodeURIComponent(fileName)}`;
+// Helper function: Upload image to cloud storage
+async function uploadImageToCloud(imageBuffer, filename) {
+  try {
+    // في الواقع، ستستخدم Cloudinary أو AWS S3
+    // هنا مجرد محاكاة
+    const base64Image = imageBuffer.toString('base64');
+    
+    // محاكاة رفع للسحابة
+    const mockUrl = `https://res.cloudinary.com/demo/image/upload/v1/${filename}.jpg`;
+    
+    // في التطبيق الحقيقي:
+    // const result = await cloudinary.uploader.upload(`data:image/jpeg;base64,${base64Image}`);
+    // return result.secure_url;
+    
+    return mockUrl;
+  } catch (error) {
+    throw new Error('فشل في رفع الصورة');
+  }
 }
 
-// Routes
+// Helper function: Generate description with Gemini
+async function generateDescription(productImageUrl, sceneImageUrl, userDescription) {
+  try {
+    const prompt = `
+    تحليل الصور المرفقة وإنشاء وصف تفصيلي لمشروع CGI:
+    
+    صورة المنتج: ${productImageUrl}
+    صورة المشهد: ${sceneImageUrl}
+    وصف المستخدم: ${userDescription || 'لا يوجد وصف إضافي'}
+    
+    يرجى إنشاء وصف احترافي للمشروع يتضمن:
+    1. وصف المنتج
+    2. وصف المشهد المطلوب
+    3. النتيجة المتوقعة
+    `;
+
+    // في التطبيق الحقيقي، ستستخدم Gemini API
+    // const response = await axios.post('https://generativelanguage.googleapis.com/v1beta/models/gemini-pro:generateContent', {
+    //   contents: [{ parts: [{ text: prompt }] }]
+    // }, {
+    //   headers: { 'x-goog-api-key': GEMINI_API_KEY }
+    // });
+
+    // محاكاة رد Gemini
+    const mockDescription = `مشروع CGI احترافي لدمج المنتج في المشهد المحدد. سيتم استخدام تقنيات الذكاء الاصطناعي المتقدمة لإنشاء صورة واقعية تظهر المنتج بشكل طبيعي في البيئة المطلوبة مع مراعاة الإضاءة والظلال والانعكاسات.`;
+    
+    return mockDescription;
+  } catch (error) {
+    console.error('Error generating description:', error);
+    return userDescription || 'مشروع CGI جديد';
+  }
+}
+
+// Helper function: Generate CGI with Fal.ai
+async function generateCGI(productImageUrl, sceneImageUrl, description, type = 'image') {
+  try {
+    const payload = {
+      product_image: productImageUrl,
+      scene_image: sceneImageUrl,
+      prompt: description,
+      output_type: type, // 'image' or 'video'
+      quality: 'high',
+      style: 'realistic'
+    };
+
+    // في التطبيق الحقيقي، ستستخدم Fal.ai API
+    // const response = await axios.post('https://fal.run/fal-ai/product-placement', payload, {
+    //   headers: {
+    //     'Authorization': `Key ${FAL_API_KEY}`,
+    //     'Content-Type': 'application/json'
+    //   }
+    // });
+
+    // محاكاة نتيجة Fal.ai
+    const mockResult = {
+      output_url: type === 'video' 
+        ? 'https://sample-videos.com/zip/10/mp4/SampleVideo_1280x720_1mb.mp4'
+        : 'https://picsum.photos/800/600',
+      processing_time: Math.floor(Math.random() * 120) + 30, // 30-150 seconds
+      quality_score: 0.95
+    };
+
+    return mockResult;
+  } catch (error) {
+    console.error('Error generating CGI:', error);
+    throw new Error('فشل في إنشاء المحتوى');
+  }
+}
+
+// Helper function: Deduct credits
+function deductCredits(userId, amount) {
+  const user = users.find(u => u.id === userId);
+  if (!user || user.credits < amount) {
+    return false;
+  }
+  user.credits -= amount;
+  return true;
+}
 
 // Health check
-app.get('/api/health', async (req, res) => {
-  let dbStatus = 'Disconnected';
-  let dbError = null;
-  
-  try {
-    await connectDB();
-    dbStatus = mongoose.connection.readyState === 1 ? 'Connected' : 'Disconnected';
-    console.log('Health check - DB status:', dbStatus);
-  } catch (error) {
-    dbError = error.message;
-    console.error('Health check - DB error:', error.message);
-  }
-  
+app.get('/api/health', (req, res) => {
   res.json({ 
     status: 'OK', 
-    message: 'CGI Generator API with MongoDB is running!',
+    message: 'CGI Generator API is running!',
     timestamp: new Date().toISOString(),
-    version: '2.1.0',
-    database: dbStatus,
-    ...(dbError && { dbError }),
-    environment: process.env.NODE_ENV || 'development'
+    version: '2.0.0',
+    features: ['Authentication', 'File Upload', 'AI Integration']
   });
 });
 
 // Register
 app.post('/api/register', async (req, res) => {
   try {
-    await connectDB();
-    
     const { name, email, password } = req.body;
     
     if (!name || !email || !password) {
@@ -165,312 +177,366 @@ app.post('/api/register', async (req, res) => {
     }
     
     if (password.length < 6) {
-      return res.status(400).json({ error: 'كلمة المرور يجب أن تكون 6 أحرف على الأقل' });
+      return res.status(400).json({ error: 'كلمة المرور يجب أن تحتوي على 6 أحرف على الأقل' });
     }
     
-    const existingUser = await User.findOne({ email });
-    if (existingUser) {
+    if (users.find(u => u.email === email)) {
       return res.status(400).json({ error: 'المستخدم موجود بالفعل' });
     }
     
     const hashedPassword = await bcrypt.hash(password, 10);
     
-    const user = new User({
+    const user = {
+      id: currentUserId++,
       name,
       email,
       password: hashedPassword,
-      credits: 5
-    });
+      credits: 5, // 5 كريدت مجاني للمستخدمين الجدد
+      createdAt: new Date(),
+      lastLogin: new Date()
+    };
     
-    await user.save();
+    users.push(user);
     
-    const token = jwt.sign({ id: user._id }, JWT_SECRET);
+    const token = jwt.sign({ id: user.id }, JWT_SECRET);
     
     res.json({
       success: true,
-      message: 'تم إنشاء الحساب بنجاح',
+      message: 'تم إنشاء الحساب بنجاح! حصلت على 5 كريدت مجاناً',
       token,
       user: { 
-        id: user._id, 
+        id: user.id, 
         name: user.name, 
         email: user.email, 
-        credits: user.credits,
-        plan: user.plan
+        credits: user.credits 
       }
     });
     
   } catch (error) {
-    console.error('Register error:', error);
-    res.status(500).json({ error: 'خطأ في إنشاء الحساب: ' + error.message });
+    res.status(500).json({ error: 'خطأ في إنشاء الحساب' });
   }
 });
 
 // Login
 app.post('/api/login', async (req, res) => {
   try {
-    await connectDB();
-    
     const { email, password } = req.body;
     
-    const user = await User.findOne({ email });
+    const user = users.find(u => u.email === email);
     if (!user) {
-      return res.status(400).json({ error: 'المستخدم غير موجود' });
+      return res.status(400).json({ error: 'البريد الإلكتروني أو كلمة المرور غير صحيحة' });
     }
     
     const validPassword = await bcrypt.compare(password, user.password);
     if (!validPassword) {
-      return res.status(400).json({ error: 'كلمة المرور غير صحيحة' });
+      return res.status(400).json({ error: 'البريد الإلكتروني أو كلمة المرور غير صحيحة' });
     }
     
+    // Update last login
     user.lastLogin = new Date();
-    await user.save();
     
-    const token = jwt.sign({ id: user._id }, JWT_SECRET);
+    const token = jwt.sign({ id: user.id }, JWT_SECRET);
     
     res.json({
       success: true,
       message: 'تم تسجيل الدخول بنجاح',
       token,
       user: { 
-        id: user._id, 
+        id: user.id, 
         name: user.name, 
         email: user.email, 
-        credits: user.credits,
-        plan: user.plan
+        credits: user.credits 
       }
     });
     
   } catch (error) {
-    console.error('Login error:', error);
-    res.status(500).json({ error: 'خطأ في تسجيل الدخول: ' + error.message });
+    res.status(500).json({ error: 'خطأ في تسجيل الدخول' });
   }
 });
 
 // Get user profile
-app.get('/api/profile', authenticateUser, async (req, res) => {
-  try {
-    const user = await User.findById(req.user._id);
-    res.json({
-      user: {
-        id: user._id,
-        name: user.name,
-        email: user.email,
-        credits: user.credits,
-        plan: user.plan,
-        createdAt: user.createdAt,
-        lastLogin: user.lastLogin
-      }
-    });
-  } catch (error) {
-    console.error('Profile error:', error);
-    res.status(500).json({ error: 'خطأ في جلب الملف الشخصي: ' + error.message });
-  }
+app.get('/api/profile', authenticateUser, (req, res) => {
+  res.json({
+    user: {
+      id: req.user.id,
+      name: req.user.name,
+      email: req.user.email,
+      credits: req.user.credits,
+      createdAt: req.user.createdAt,
+      lastLogin: req.user.lastLogin
+    }
+  });
 });
 
-// Get user projects
-app.get('/api/projects', authenticateUser, async (req, res) => {
-  try {
-    const projects = await Project.find({ userId: req.user._id })
-      .sort({ createdAt: -1 });
-    
-    res.json({ projects });
-  } catch (error) {
-    console.error('Projects error:', error);
-    res.status(500).json({ error: 'خطأ في جلب المشاريع: ' + error.message });
-  }
+// Get user jobs
+app.get('/api/jobs', authenticateUser, (req, res) => {
+  const userJobs = jobs.filter(job => job.userId === req.user.id)
+    .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+  res.json({ jobs: userJobs });
 });
 
-// Create project with file upload
-app.post('/api/create-project', authenticateUser, upload.fields([
+// Upload images endpoint
+app.post('/api/upload-images', authenticateUser, upload.fields([
   { name: 'productImage', maxCount: 1 },
   { name: 'sceneImage', maxCount: 1 }
 ]), async (req, res) => {
   try {
-    const { title, description, contentType = 'image' } = req.body;
-    const requiredCredits = contentType === 'video' ? 5 : 1;
+    const { productImage, sceneImage } = req.files;
     
-    // Check credits
-    if (req.user.credits < requiredCredits) {
-      return res.status(400).json({ 
-        error: `تحتاج إلى ${requiredCredits} كريدت لإنشاء هذا المحتوى` 
-      });
-    }
-    
-    // Check uploaded files
-    if (!req.files?.productImage || !req.files?.sceneImage) {
+    if (!productImage || !sceneImage) {
       return res.status(400).json({ error: 'يرجى رفع صورة المنتج وصورة المشهد' });
     }
     
-    const productImage = req.files.productImage[0];
-    const sceneImage = req.files.sceneImage[0];
+    const productImageUrl = await uploadImageToCloud(productImage[0].buffer, `product_${Date.now()}`);
+    const sceneImageUrl = await uploadImageToCloud(sceneImage[0].buffer, `scene_${Date.now()}`);
     
-    // Upload images to cloud storage (placeholder)
-    const productImageUrl = await uploadToCloudStorage(
-      productImage.buffer, 
-      `product_${Date.now()}_${productImage.originalname}`
+    res.json({
+      success: true,
+      message: 'تم رفع الصور بنجاح',
+      data: {
+        productImageUrl,
+        sceneImageUrl
+      }
+    });
+    
+  } catch (error) {
+    console.error('Upload error:', error);
+    res.status(500).json({ error: 'فشل في رفع الصور' });
+  }
+});
+
+// Create CGI job
+app.post('/api/create-cgi-job', authenticateUser, async (req, res) => {
+  try {
+    const { 
+      title, 
+      description, 
+      contentType, 
+      productImageUrl, 
+      sceneImageUrl 
+    } = req.body;
+    
+    if (!productImageUrl || !sceneImageUrl) {
+      return res.status(400).json({ error: 'يرجى رفع الصور أولاً' });
+    }
+    
+    const requiredCredits = contentType === 'video' ? 5 : 1;
+    
+    if (!deductCredits(req.user.id, requiredCredits)) {
+      return res.status(400).json({ error: 'لا يوجد كريدت كافي' });
+    }
+    
+    // Generate enhanced description with AI
+    const enhancedDescription = await generateDescription(
+      productImageUrl, 
+      sceneImageUrl, 
+      description
     );
     
-    const sceneImageUrl = await uploadToCloudStorage(
-      sceneImage.buffer, 
-      `scene_${Date.now()}_${sceneImage.originalname}`
-    );
-    
-    // Create project
-    const project = new Project({
-      userId: req.user._id,
+    const job = {
+      id: currentJobId++,
+      userId: req.user.id,
       title: title || 'مشروع CGI جديد',
-      description: description || 'مشروع توليد صور وفيديوهات CGI',
+      description: enhancedDescription,
       contentType,
       productImageUrl,
       sceneImageUrl,
-      creditsUsed: requiredCredits,
       status: 'processing',
-      processingStarted: new Date()
-    });
+      progress: 0,
+      creditsUsed: requiredCredits,
+      createdAt: new Date(),
+      updatedAt: new Date()
+    };
     
-    await project.save();
+    jobs.push(job);
     
-    // Deduct credits
-    await User.findByIdAndUpdate(req.user._id, {
-      $inc: { credits: -requiredCredits }
-    });
-    
-    // Simulate AI processing
-    setTimeout(async () => {
-      try {
-        await connectDB();
-        await Project.findByIdAndUpdate(project._id, {
-          status: 'completed',
-          processingCompleted: new Date(),
-          resultImageUrl: 'https://via.placeholder.com/800x600.png?text=CGI+Result+Image',
-          resultVideoUrl: contentType === 'video' ? 'https://sample-videos.com/zip/10/mp4/360/mp4-5s.mp4' : null
-        });
-      } catch (error) {
-        console.error('Error updating project status:', error);
-      }
-    }, 10000); // 10 seconds simulation
+    // Start CGI generation in background
+    generateCGIAsync(job.id, productImageUrl, sceneImageUrl, enhancedDescription, contentType);
     
     res.json({
       success: true,
-      message: 'تم إنشاء المشروع بنجاح وبدء المعالجة',
-      project: {
-        id: project._id,
-        title: project.title,
-        status: project.status,
-        contentType: project.contentType,
-        creditsUsed: project.creditsUsed,
-        createdAt: project.createdAt
+      message: 'تم إنشاء المشروع بنجاح! جاري المعالجة...',
+      job: {
+        id: job.id,
+        title: job.title,
+        description: job.description,
+        status: job.status,
+        contentType: job.contentType,
+        createdAt: job.createdAt
       }
     });
     
   } catch (error) {
-    console.error('Create project error:', error);
-    res.status(500).json({ error: 'خطأ في إنشاء المشروع: ' + error.message });
+    console.error('Create job error:', error);
+    res.status(500).json({ error: 'فشل في إنشاء المشروع' });
   }
 });
 
-// Get project by ID
-app.get('/api/projects/:id', authenticateUser, async (req, res) => {
+// Background CGI generation
+async function generateCGIAsync(jobId, productImageUrl, sceneImageUrl, description, contentType) {
   try {
-    const project = await Project.findOne({ 
-      _id: req.params.id, 
-      userId: req.user._id 
-    });
+    const job = jobs.find(j => j.id === jobId);
+    if (!job) return;
     
-    if (!project) {
-      return res.status(404).json({ error: 'المشروع غير موجود' });
+    // Update progress
+    job.progress = 25;
+    job.updatedAt = new Date();
+    
+    // Simulate processing time
+    await new Promise(resolve => setTimeout(resolve, 2000));
+    job.progress = 50;
+    
+    await new Promise(resolve => setTimeout(resolve, 3000));
+    job.progress = 75;
+    
+    // Generate CGI
+    const result = await generateCGI(productImageUrl, sceneImageUrl, description, contentType);
+    
+    // Update job with result
+    job.status = 'completed';
+    job.progress = 100;
+    job.outputUrl = result.output_url;
+    job.processingTime = result.processing_time;
+    job.qualityScore = result.quality_score;
+    job.updatedAt = new Date();
+    
+    console.log(`✅ Job ${jobId} completed successfully`);
+    
+  } catch (error) {
+    console.error(`❌ Job ${jobId} failed:`, error);
+    
+    const job = jobs.find(j => j.id === jobId);
+    if (job) {
+      job.status = 'failed';
+      job.error = 'فشل في معالجة المشروع';
+      job.updatedAt = new Date();
+      
+      // Refund credits
+      const user = users.find(u => u.id === job.userId);
+      if (user) {
+        user.credits += job.creditsUsed;
+      }
     }
-    
-    res.json({ project });
-  } catch (error) {
-    console.error('Get project error:', error);
-    res.status(500).json({ error: 'خطأ في جلب المشروع: ' + error.message });
   }
-});
+}
 
-// Add credits (for admin or payment processing)
-app.post('/api/add-credits', authenticateUser, async (req, res) => {
-  try {
-    const { credits, reason = 'Purchase' } = req.body;
-    
-    if (!credits || credits <= 0) {
-      return res.status(400).json({ error: 'عدد الكريدت يجب أن يكون أكبر من صفر' });
+// Get job status
+app.get('/api/jobs/:jobId/status', authenticateUser, (req, res) => {
+  const jobId = parseInt(req.params.jobId);
+  const job = jobs.find(j => j.id === jobId && j.userId === req.user.id);
+  
+  if (!job) {
+    return res.status(404).json({ error: 'المشروع غير موجود' });
+  }
+  
+  res.json({
+    job: {
+      id: job.id,
+      status: job.status,
+      progress: job.progress,
+      outputUrl: job.outputUrl,
+      error: job.error,
+      updatedAt: job.updatedAt
     }
-    
-    const user = await User.findByIdAndUpdate(
-      req.user._id,
-      { $inc: { credits: credits } },
-      { new: true }
-    );
-    
-    res.json({
-      success: true,
-      message: `تم إضافة ${credits} كريدت بنجاح`,
-      user: {
-        id: user._id,
-        name: user.name,
-        email: user.email,
-        credits: user.credits,
-        plan: user.plan
-      }
-    });
-    
-  } catch (error) {
-    console.error('Add credits error:', error);
-    res.status(500).json({ error: 'خطأ في إضافة الكريدت: ' + error.message });
-  }
+  });
 });
 
-// Get dashboard stats
-app.get('/api/stats', authenticateUser, async (req, res) => {
-  try {
-    const totalProjects = await Project.countDocuments({ userId: req.user._id });
-    const completedProjects = await Project.countDocuments({ 
-      userId: req.user._id, 
-      status: 'completed' 
-    });
-    const processingProjects = await Project.countDocuments({ 
-      userId: req.user._id, 
-      status: 'processing' 
-    });
-    
-    res.json({
-      stats: {
-        totalProjects,
-        completedProjects,
-        processingProjects,
-        credits: req.user.credits,
-        plan: req.user.plan
-      }
-    });
-  } catch (error) {
-    console.error('Stats error:', error);
-    res.status(500).json({ error: 'خطأ في جلب الإحصائيات: ' + error.message });
+// Download result
+app.get('/api/jobs/:jobId/download', authenticateUser, (req, res) => {
+  const jobId = parseInt(req.params.jobId);
+  const job = jobs.find(j => j.id === jobId && j.userId === req.user.id);
+  
+  if (!job || job.status !== 'completed') {
+    return res.status(404).json({ error: 'المشروع غير متاح للتحميل' });
   }
+  
+  res.json({
+    success: true,
+    downloadUrl: job.outputUrl,
+    contentType: job.contentType
+  });
+});
+
+// Buy credits (placeholder)
+app.post('/api/buy-credits', authenticateUser, (req, res) => {
+  const { package: packageType } = req.body;
+  
+  // محاكاة شراء الكريدت
+  const packages = {
+    starter: { credits: 10, price: 9.99 },
+    professional: { credits: 50, price: 39.99 },
+    enterprise: { credits: 200, price: 149.99 }
+  };
+  
+  const selectedPackage = packages[packageType];
+  if (!selectedPackage) {
+    return res.status(400).json({ error: 'باقة غير صالحة' });
+  }
+  
+  // في التطبيق الحقيقي، ستتعامل مع Stripe هنا
+  req.user.credits += selectedPackage.credits;
+  
+  res.json({
+    success: true,
+    message: `تم شراء ${selectedPackage.credits} كريدت بنجاح!`,
+    newBalance: req.user.credits
+  });
+});
+
+// Get pricing
+app.get('/api/pricing', (req, res) => {
+  res.json({
+    packages: [
+      {
+        id: 'starter',
+        name: 'المبتدئ',
+        credits: 10,
+        price: 9.99,
+        features: ['10 كريدت', 'صور CGI', 'فيديوهات قصيرة', 'دعم فني']
+      },
+      {
+        id: 'professional',
+        name: 'المحترف',
+        credits: 50,
+        price: 39.99,
+        popular: true,
+        features: ['50 كريدت', 'صور عالية الجودة', 'فيديوهات طويلة', 'أولوية في المعالجة', 'دعم مميز']
+      },
+      {
+        id: 'enterprise',
+        name: 'المؤسسات',
+        credits: 200,
+        price: 149.99,
+        features: ['200 كريدت', 'جودة فائقة', 'معالجة سريعة', 'API مخصص', 'دعم مخصص']
+      }
+    ]
+  });
+});
+
+// Error handling middleware
+app.use((error, req, res, next) => {
+  console.error('Error:', error);
+  
+  if (error instanceof multer.MulterError) {
+    if (error.code === 'LIMIT_FILE_SIZE') {
+      return res.status(400).json({ error: 'حجم الملف كبير جداً' });
+    }
+  }
+  
+  res.status(500).json({ error: 'خطأ في الخادم' });
 });
 
 // 404 handler
 app.use('*', (req, res) => {
-  res.status(404).json({ error: 'Route not found' });
-});
-
-// Error handler
-app.use((error, req, res, next) => {
-  if (error instanceof multer.MulterError) {
-    if (error.code === 'LIMIT_FILE_SIZE') {
-      return res.status(400).json({ error: 'حجم الملف كبير جداً (الحد الأقصى 10MB)' });
-    }
-  }
-  
-  console.error('Server error:', error);
-  res.status(500).json({ error: 'خطأ في الخادم: ' + error.message });
+  res.status(404).json({ error: 'الصفحة غير موجودة' });
 });
 
 const PORT = process.env.PORT || 3000;
 
-if (process.env.NODE_ENV !== 'production') {
+if (require.main === module) {
   app.listen(PORT, () => {
-    console.log(`🚀 Server running on port ${PORT}`);
+    console.log(`🚀 CGI Generator API running on port ${PORT}`);
+    console.log(`📊 Health check: http://localhost:${PORT}/api/health`);
   });
 }
 
