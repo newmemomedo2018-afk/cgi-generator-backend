@@ -1,6 +1,6 @@
 {
   "name": "cgi-generator",
-  "version": "2.0.0",
+  "version": "2.1.0",
   "description": "CGI Generator - منصة إنتاج المحتوى بالذكاء الاصطناعي",
   "main": "server.js",
   "scripts": {
@@ -28,7 +28,10 @@
     "saas", 
     "image-processing", 
     "video-generation",
-    "machine-learning"
+    "machine-learning",
+    "cloudinary",
+    "gemini-ai",
+    "fal-ai"
   ],
   "author": "CGI Generator Team",
   "license": "MIT",
@@ -37,10 +40,10 @@
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/your-username/cgi-generator-backend.git"
+    "url": "https://github.com/newmemomedo2018-afk/cgi-generator-backend.git"
   },
   "homepage": "https://cgi-generator.com",
   "bugs": {
-    "url": "https://github.com/your-username/cgi-generator-backend/issues"
+    "url": "https://github.com/newmemomedo2018-afk/cgi-generator-backend/issues"
   }
 }
