@@ -406,6 +406,8 @@ app.get('/api/jobs/:jobId/status', authenticateUser, (req, res) => {
   });
 });
 
+
+
 // Get user profile
 app.get('/api/profile', authenticateUser, (req, res) => {
   console.log('👤 Profile requested for user:', req.user.id);
@@ -428,6 +430,81 @@ app.get('/api/jobs', authenticateUser, (req, res) => {
     .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
   console.log('📋 Found', userJobs.length, 'jobs for user');
   res.json({ jobs: userJobs });
+});
+
+// أضف هذا الكود بعد السطر اللي فيه app.get('/api/jobs', authenticateUser, (req, res) => {
+
+// Helper function: Upload image to Cloudinary - مفقود
+async function uploadImageToCloudinary(imageBuffer, filename) {
+  try {
+    console.log('☁️ Uploading to Cloudinary:', filename);
+    const base64Image = `data:image/jpeg;base64,${imageBuffer.toString('base64')}`;
+    
+    const result = await cloudinary.uploader.upload(base64Image, {
+      public_id: `cgi-generator/${filename}`,
+      folder: 'cgi-generator',
+      resource_type: 'image',
+      quality: 'auto',
+      fetch_format: 'auto'
+    });
+    
+    console.log('✅ Cloudinary upload successful:', result.secure_url);
+    return result.secure_url;
+  } catch (error) {
+    console.error('❌ Cloudinary upload error:', error);
+    throw new Error('فشل في رفع الصورة');
+  }
+}
+
+// Upload images endpoint - مفقود تماماً
+app.post('/api/upload-images', authenticateUser, upload.fields([
+  { name: 'productImage', maxCount: 1 },
+  { name: 'sceneImage', maxCount: 1 }
+]), async (req, res) => {
+  console.log('📤 Upload images request started');
+  console.log('📤 User ID:', req.user.id);
+  console.log('📤 Files received:', req.files ? Object.keys(req.files) : 'none');
+  
+  try {
+    const { productImage, sceneImage } = req.files;
+    
+    if (!productImage || !sceneImage) {
+      console.log('❌ Missing files - Product:', !!productImage, 'Scene:', !!sceneImage);
+      return res.status(400).json({ error: 'يرجى رفع صورة المنتج وصورة المشهد' });
+    }
+    
+    console.log('📤 Product image size:', productImage[0].size, 'bytes');
+    console.log('📤 Scene image size:', sceneImage[0].size, 'bytes');
+    
+    console.log('☁️ Starting Cloudinary uploads...');
+    
+    const productImageUrl = await uploadImageToCloudinary(
+      productImage[0].buffer, 
+      `product_${Date.now()}_${req.user.id}`
+    );
+    
+    const sceneImageUrl = await uploadImageToCloudinary(
+      sceneImage[0].buffer, 
+      `scene_${Date.now()}_${req.user.id}`
+    );
+    
+    console.log('✅ Both images uploaded successfully');
+    console.log('✅ Product URL:', productImageUrl);
+    console.log('✅ Scene URL:', sceneImageUrl);
+    
+    res.json({
+      success: true,
+      message: 'تم رفع الصور بنجاح',
+      data: {
+        productImageUrl,
+        sceneImageUrl
+      }
+    });
+    
+  } catch (error) {
+    console.error('❌ Upload error:', error);
+    res.status(500).json({ error: error.message || 'فشل في رفع الصور' });
+  }
 });
 
 // Enhanced pricing endpoint
