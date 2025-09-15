@@ -508,7 +508,21 @@ app.post('/api/upload-images', authenticateUser, upload.fields([
 });
 
 
-
+// Download result endpoint
+app.get('/api/jobs/:jobId/download', authenticateUser, (req, res) => {
+  const jobId = parseInt(req.params.jobId);
+  const job = jobs.find(j => j.id === jobId && j.userId === req.user.id);
+  
+  if (!job || job.status !== 'completed') {
+    return res.status(404).json({ error: 'المشروع غير متاح للتحميل' });
+  }
+  
+  res.json({
+    success: true,
+    downloadUrl: job.outputUrl,
+    contentType: job.contentType
+  });
+});
 // Download result endpoint - مفقود
 app.get('/api/jobs/:jobId/download', authenticateUser, (req, res) => {
   console.log('⬇️ Download requested for job:', req.params.jobId);
